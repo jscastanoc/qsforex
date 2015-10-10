@@ -46,3 +46,5 @@ if __name__ == "__main__":
 
     # Plot the figure
     plt.show()
+
+    # TODO generate for statistics/performance measures (sharpe ratio, etc...)
