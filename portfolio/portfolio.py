@@ -125,7 +125,7 @@ class Portfolio(object):
                 else:
                     out_line += ",0.00"
             out_line += "\n"
-            print(out_line[:-2])
+            # print(out_line[:-2])
             self.backtest_file.write(out_line)
 
     def execute_signal(self, signal_event):

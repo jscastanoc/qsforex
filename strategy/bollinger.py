@@ -3,11 +3,14 @@ import os
 import copy
 from collections import deque
 import logging
+import csv
 
 import numpy as np
-import pandas as pd
+
+
 
 from qsforex.event.event import SignalEvent
+from qsforex.settings import OUTPUT_RESULTS_DIR
 
 class BollingerBands(object):
     """
@@ -24,11 +27,43 @@ class BollingerBands(object):
         :return:
             --
         """
-        # set buy/sell signal logger
+
+        self.set_executionLogger()
+        self.set_signalLogger()
+
+
+        fields = ["time_stamp", "ticks","mvg_avg", "mvg_std", "signal"]
+        self.set_algorithmTracker(pairs,fields)
+
+        # set hyperparameters of the algorithm and the object
+        self.pairs = pairs
+        self.pairs_dict = self.create_pairs_dict()
+        self.events = events
+        self.win_size = win_size
+        self.std_factor = std_factor
+
+    def __del__(self):
+        for p in self.alg_trackerHandler.keys():
+            self.logger_exec.debug("closing logging file %s",self.alg_trackerHandler[p].name)
+            self.alg_trackerHandler[p].close()
+
+    def set_executionLogger(self):
+        # set execution logger
+        self.logger_exec = logging.getLogger(__name__)
+        self.logger_exec.setLevel(logging.DEBUG)
+        logfile_name = os.path.join(OUTPUT_RESULTS_DIR, "exec.log")
+        log_handlerFileExec = logging.FileHandler(logfile_name)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        log_handlerFileExec.setFormatter(formatter)
+        self.logger_exec.addHandler(log_handlerFileExec)
+
+
+    def set_signalLogger(self):
+        # set signal logger
         self.logger_signals = logging.getLogger(__name__)
         self.logger_signals.setLevel(logging.DEBUG)
 
-        logfile_name = os.path.join(backtest_dir, "loguito.log")
+        logfile_name = os.path.join(OUTPUT_RESULTS_DIR, "signals.log")
         log_handlerFile = logging.FileHandler(logfile_name)
         log_handlerFile.setLevel(logging.DEBUG)
         self.logger_signals.addHandler(log_handlerFile)
@@ -37,12 +72,28 @@ class BollingerBands(object):
         log_handlerStream.setLevel(logging.DEBUG)
         self.logger_signals.addHandler(log_handlerStream)
 
-        # set hyperparameters of the algorithm
-        self.pairs = pairs
-        self.pairs_dict = self.create_pairs_dict()
-        self.events = events
-        self.win_size = win_size
-        self.std_factor = std_factor
+    def set_algorithmTracker(self,pairs,fields):
+        """
+        set  paradigm/specific tracker of parameters and hyperparameters
+        fields contains the information logged:
+          time_stamp: real time of the tick
+          ticks: indexing of the time stamp
+          mvg_avg: current value of the moving average (bollinger-band specific)
+          mvg_std: current value of the moving standard deviation (bb specific)
+          signal: string indicating sell/buy signals
+        :param pairs: string coding the currency pair, e.g., EURUSD
+        :return: n/a
+        """
+        # set signal logger
+        self.alg_trackerHandler = {}
+        self.alg_trackerData = {}
+        for p in pairs:
+            fname = os.path.join(OUTPUT_RESULTS_DIR, "alg_tracker"+p+".csv")
+            self.logger_exec.debug("opening logging file %s",fname)
+            self.alg_trackerHandler[p] = open(fname, 'wb')
+            self.alg_trackerData[p] = csv.writer(self.alg_trackerHandler[p], delimiter=',')
+            self.alg_trackerData[p].writerow(fields)
+
 
     def create_pairs_dict(self):
         """
@@ -74,33 +125,43 @@ class BollingerBands(object):
             """
             pair = event.instrument
             price = event.bid
-            pd = self.pairs_dict[pair]
-            pd["price_buffer"].append(price)
+            p_data = self.pairs_dict[pair]
+            p_data["price_buffer"].append(price)
 
-            if pd["ticks"] >= self.win_size:
-                mvg_avg = np.mean(pd["price_buffer"])
-                mvg_std = np.std(pd["price_buffer"])
+            # pre initialize parameters for the alg_tracker
+            mvg_avg = np.nan
+            mvg_std = np.nan
+            sig_type = "n/a"
+            if p_data["ticks"] >= self.win_size:
+                mvg_avg = np.mean(p_data["price_buffer"])
+                mvg_std = np.std(p_data["price_buffer"])
 
                 upper_bound = (mvg_avg+self.std_factor*mvg_std)
                 lower_bound = (mvg_avg-self.std_factor*mvg_std)
 
                 # generate the sell/buy signals according to the bollinger rules
-                if price > upper_bound and pd["invested"]:
-                    type = "sell"
-                    signal = SignalEvent(pair, "market", type, event.time)
-                    print(signal)
+                if price > upper_bound and p_data["invested"]:
+                    sig_type = "sell"
+                    signal = SignalEvent(pair, "market", sig_type, event.time)
                     self.events.put(signal)
-                    pd["invested"] = False
+                    p_data["invested"] = False
                     self.logger_signals.info("Pair:%s Type:%s Time:%s",pair
-                                             ,type,event.time)
-                if price < lower_bound and not pd["invested"]:
-                    type = "buy"
-                    signal = SignalEvent(pair, "market", type, event.time )
+                                             ,sig_type,event.time)
+                if price < lower_bound and not p_data["invested"]:
+                    sig_type = "buy"
+                    signal = SignalEvent(pair, "market", sig_type, event.time )
                     self.events.put(signal)
-                    pd["invested"] = True
+                    p_data["invested"] = True
                     self.logger_signals.info("Pair:%s Type:%s Time:%s",pair
-                                             ,type,event.time)
-                pd["price_buffer"].popleft()
+                                             ,sig_type,event.time)
+                p_data["price_buffer"].popleft()
 
-            pd["ticks"] +=1
+            self.alg_trackerData[pair].writerow([event.time,
+                                                p_data["ticks"],
+                                                price,
+                                                mvg_avg,
+                                                mvg_std,
+                                                sig_type])
+
+            p_data["ticks"] +=1
             # TODO how to visualize strategy-specific parameters for a backtest validation
